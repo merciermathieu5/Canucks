@@ -1,7 +1,17 @@
 name: Relève des alignements USHL
 
-# Tourne chaque matin, et à la demande depuis l'onglet Actions
-# (bouton « Run workflow »), par exemple après une ronde d'agents libres.
+# Copie les 32 alignements relevés par le dépôt central ushl-releve
+# (data/rosters.json) dans data/rosters.json. Aucune requête vers ushl.ca.
+#
+# Depuis le 26 novembre 2026, ushl-releve relève la ligue une seule fois puis
+# lance ce workflow dans chaque interface. Avant, chacun des 22 dépôts relevait
+# les 32 pages lui-même (plus de 700 requêtes en quelques minutes) et ushl.ca
+# servait sa page anti-robot à presque tous.
+#
+# Le cron reste comme filet de sécurité si un déclenchement se perd. Aussi à
+# la demande depuis l'onglet Actions (bouton « Run workflow »). Pour relever
+# ushl.ca de nouveau, lancer « Relève centrale des alignements USHL » dans
+# ushl-releve. scripts/fetch-rosters.mjs reste dans le dépôt en dépannage.
 on:
   schedule:
     - cron: '50 11 * * *'   # 11:50 UTC ≈ 07:50 heure de l'Est
@@ -10,14 +20,15 @@ on:
 permissions:
   contents: write
 
+# Même groupe que production.yml : les deux relevés ne poussent jamais en même temps.
 concurrency:
   group: releve-rosters
   cancel-in-progress: false
 
 jobs:
-  relever:
+  copier:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
 
@@ -25,16 +36,16 @@ jobs:
         with:
           node-version: '20'
 
-      # jsdom sert à réutiliser le parseur de index.html tel quel,
-      # pour que serveur et navigateur lisent les pages de la même façon.
-      - name: Installer jsdom
-        run: npm install jsdom --no-save --no-audit --no-fund
+      - name: Télécharger le relevé central
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/merciermathieu5/ushl-releve/contents/data/rosters.json \
+            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/rosters.json"
 
-      - name: Relever les 32 alignements
-        run: node scripts/fetch-rosters.mjs
+      - name: Vérifier et copier
+        run: node scripts/copier-rosters.mjs "$RUNNER_TEMP/rosters.json"
 
-      # Le script sort en erreur si la relève est incomplète : dans ce cas
-      # l'étape précédente échoue et data/rosters.json reste tel quel.
       - name: Committer si le fichier a changé
         run: |
           if [[ -z "$(git status --porcelain data/rosters.json)" ]]; then
@@ -44,5 +55,6 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/rosters.json
-          git commit -m "Alignements USHL — relevé du $(date -u +%Y-%m-%d)"
+          git commit -m "Alignements USHL : copie du relevé central du $(TZ=America/Toronto date +'%Y-%m-%d %H:%M')"
+          git pull --rebase --quiet origin "${GITHUB_REF_NAME}"
           git push
